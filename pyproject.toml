@@ -1,0 +1,23 @@
+[project]
+name = "diyabet-takip-sistemi"
+version = "2.0.0"
+description = "Tkinter + MongoDB tabanlı diyabet takip masaüstü uygulaması"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
+# BLE001: masaüstü uygulamada beklenmedik veri/DB hatalarında ekranın
+# çökmemesi için geniş `except Exception` kullanıyoruz.
+# C408: stil tercihi (dict(literal) eşdeğeri), zorunlu değil.
+# RUF001/002/003: proje tamamen Türkçe; 'ı/i', emoji vb. "belirsiz
+# unicode" uyarıları kasıtlı olarak girilmiştir.
+ignore = ["BLE001", "C408", "RUF001", "RUF002", "RUF003", "E501", "N812"]
+
+[tool.ruff.lint.per-file-ignores]
+# legacy MySQL şema hikâyesi ve tek-off dökümanlar kontrol dışı
+"docs/legacy/*" = ["ALL"]
+"scripts/*" = ["E402"]
