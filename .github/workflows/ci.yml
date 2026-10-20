@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017
+      MONGODB_DB: diyabet_takip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Kurulum
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff
+
+      - name: Lint (ruff)
+        run: ruff check diyabet_takip scripts main.py
+
+      - name: Şema + seed doğrulaması
+        run: |
+          python - <<'PY'
+          from diyabet_takip.db.client import get_db_strict
+          from diyabet_takip.db import bootstrap
+
+          db = get_db_strict()
+          bootstrap.ensure_schema(db)
+          bootstrap.seed_if_empty(db)
+          assert db["users"].count_documents({}) >= 2, "seed beklenmedik"
+          print("Şema ve seed OK")
+          PY
+
+      - name: Smoke test (32 uçtan uca denetim)
+        run: python -X utf8 scripts/smoke_test.py

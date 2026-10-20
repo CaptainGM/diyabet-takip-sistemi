@@ -1,0 +1,16 @@
+# Yalnızca MongoDB'yi ayağa kaldırmak için:
+#   docker compose up -d
+# Uygulamanın kendisi Tkinter masaüstü olduğundan doğrudan çalıştırılır
+# (bkz: README "Kurulum").
+services:
+  mongodb:
+    image: mongo:7
+    container_name: diyabet-takip-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
