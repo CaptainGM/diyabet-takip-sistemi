@@ -86,6 +86,79 @@ def daily_average(hasta_id, d: datetime.date) -> float | None:
     return round(float(row["ortalama"]), 2) if row else None
 
 
+def daily_averages(hasta_id, days: int = 7) -> list[dict]:
+    """Son N günün günlük ortalama kan şekeri (grafik/sparkline)."""
+    db = get_db()
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=max(days - 1, 0))
+    if db is None:
+        return [
+            {"tarih": start + datetime.timedelta(days=i), "ortalama": None}
+            for i in range(days)
+        ]
+    rows = db[B.MEASUREMENTS].aggregate(
+        [
+            {
+                "$match": {
+                    "hasta_id": hasta_id,
+                    "gecerli": True,
+                    "olcum_zamani": {"$gte": date_at(start)},
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "$dateToString": {"format": "%Y-%m-%d", "date": "$olcum_zamani"}
+                    },
+                    "ortalama": {"$avg": "$kan_sekeri_degeri"},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+    )
+    by_day = {row["_id"]: round(float(row["ortalama"]), 1) for row in rows}
+    return [
+        {
+            "tarih": start + datetime.timedelta(days=i),
+            "ortalama": by_day.get((start + datetime.timedelta(days=i)).isoformat()),
+        }
+        for i in range(days)
+    ]
+
+
+def average_glucose(hasta_id, days: int = 7) -> float | None:
+    values = [row["ortalama"] for row in daily_averages(hasta_id, days) if row["ortalama"] is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 1)
+
+
+def glucose_distribution(hasta_id, days: int = 30) -> dict:
+    """Normal / yüksek / düşük ölçüm dağılımı."""
+    db = get_db()
+    counts = {"normal": 0, "yuksek": 0, "dusuk": 0}
+    if db is None:
+        return counts
+    start = date_at(datetime.date.today() - datetime.timedelta(days=max(days - 1, 0)))
+    cursor = db[B.MEASUREMENTS].find(
+        {
+            "hasta_id": hasta_id,
+            "gecerli": True,
+            "olcum_zamani": {"$gte": start},
+        },
+        {"kan_sekeri_degeri": 1},
+    )
+    for doc in cursor:
+        value = float(doc["kan_sekeri_degeri"])
+        if value < 70:
+            counts["dusuk"] += 1
+        elif value <= 140:
+            counts["normal"] += 1
+        else:
+            counts["yuksek"] += 1
+    return counts
+
+
 def diet_exercise_history(hasta_id, limit: int = 30) -> list[dict]:
     """v1 LEFT JOIN davranışı: aynı tarihte diyet/egzersiz kayıtları birleşik."""
     db = get_db()

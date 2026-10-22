@@ -30,7 +30,7 @@ jobs:
       - name: Kurulum
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt ruff
+          pip install -r requirements.txt ruff==0.17.1
 
       - name: Lint (ruff)
         run: ruff check diyabet_takip scripts main.py
@@ -48,5 +48,5 @@ jobs:
           print("Şema ve seed OK")
           PY
 
-      - name: Smoke test (32 uçtan uca denetim)
+      - name: Smoke test (33 uçtan uca denetim)
         run: python -X utf8 scripts/smoke_test.py

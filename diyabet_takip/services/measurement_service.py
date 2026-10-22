@@ -44,7 +44,7 @@ def insert_measurement(
     """
     db = get_db()
     if db is None:
-        return {"ok": False, "mesaj": "Veritabanı bağlantı hatası."}
+        return {"ok": False, "mesaj": "Ölçüm kaydı şu anda tamamlanamıyor. Lütfen tekrar deneyin."}
 
     if not 0 <= value <= 1000:
         return {"ok": False, "mesaj": "Kan şekeri değeri 0 ile 1000 arasında olmalıdır."}

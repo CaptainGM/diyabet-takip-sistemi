@@ -160,6 +160,11 @@ def main() -> None:
     check("randevu listelenir (hasta)", bool(patient_appts))
 
     print("[8/9] Hasta ekleme + şifre güncelleme")
+    # önceki smoke koşumundan kalan 99999999999'u temizle (idempotent koşum)
+    old = db[bootstrap.USERS].find_one({"tc_kimlik_no": "99999999999"})
+    if old:
+        db[bootstrap.PATIENT_PROFILES].delete_many({"user_id": old["_id"]})
+        db[bootstrap.USERS].delete_one({"_id": old["_id"]})
     new_result = doctors_db.add_patient(
         doktor_profile["_id"], "99999999999", "Smoke", "Test",
         f"smoke{int(datetime.datetime.now().timestamp())}@parcatest.com", "sifre123",
@@ -173,13 +178,22 @@ def main() -> None:
     )
     check("aynı TC ikinci kez reddedilir", not dup_result["ok"])
 
+    weak_result = auth_service.change_password(
+        hasta_user["_id"], "hasta123", "zayifsifre"
+    )
+    check("zayıf şifre reddedilir", not weak_result["ok"])
+
     pw_result = auth_service.change_password(
-        hasta_user["_id"], "hasta123", "yeni_sifre456"
+        hasta_user["_id"], "hasta123", "YeniSifre456!"
     )
     check("şifre güncelleme", pw_result["ok"])
-    relogin = auth_service.authenticate("22222222222", "yeni_sifre456")
+    relogin = auth_service.authenticate("22222222222", "YeniSifre456!")
     check("yeni şifreyle giriş", relogin["ok"])
-    auth_service.change_password(hasta_user["_id"], "yeni_sifre456", "hasta123")
+    # Demo şifresini doğrudan hash'leyerek geri yükle (politika temizlikte devre dışı).
+    db[bootstrap.USERS].update_one(
+        {"_id": hasta_user["_id"]},
+        {"$set": {"sifre_hash": security.hash_password("hasta123")}},
+    )
 
     print("[9/9] Rapor + hash politikası")
     sections = report_service.build_report(

@@ -17,14 +17,19 @@ __all__ = [
     "assign_diet_plan",
     "assign_exercise_plan",
     "assign_symptoms",
+    "average_glucose_for_doctor",
     "cancel_appointment",
     "create_appointment",
     "critical_patients_for_doctor",
     "doctor_dashboard",
     "doctor_notes_list",
+    "glucose_distribution_for_doctor",
+    "glucose_trend_for_doctor",
     "list_patients_for_doctor",
     "mark_alert_read",
+    "measurement_counts_for_doctor",
     "patient_alerts_for_doctor",
+    "recent_measurements_for_doctor",
     "save_doctor_note",
     "search_patients_for_doctor",
 ]
@@ -122,7 +127,7 @@ def patient_alerts_for_doctor(doktor_id, limit: int = 100) -> list[dict]:
         return []
     pipeline = [
         {"$match": {"doktor_id": doktor_id}},
-        {"$sort": {"olusturma_tarihi": -1}},
+        {"$sort": {"uyari_tarihi": -1, "olusturma_tarihi": -1}},
         {"$limit": limit},
         {
             "$lookup": {
@@ -146,6 +151,7 @@ def patient_alerts_for_doctor(doktor_id, limit: int = 100) -> list[dict]:
     out = [
         {
             "uyari_id": doc["_id"],
+            "hasta_id": doc.get("hasta_id"),
             "hasta_adi": f"{doc['user'].get('ad', '')} {doc['user'].get('soyad', '')}".strip(),
             "hasta_tc": doc["user"].get("tc_kimlik_no"),
             "uyari_adi": doc.get("uyari_adi"),
@@ -158,6 +164,8 @@ def patient_alerts_for_doctor(doktor_id, limit: int = 100) -> list[dict]:
         for doc in db[B.ALERTS].aggregate(pipeline)
     ]
     priority = {"Kritik": 0, "Yüksek": 1, "Orta": 2, "Düşük": 3}
+    # Önce en yeni uyarılar; sonra okunmamış + aciliyet önceliği (kararlı sıralama).
+    out.sort(key=lambda a: a["uyari_tarihi"], reverse=True)
     out.sort(key=lambda a: (a["okundu"], priority.get(a["aciliyet_seviyesi"], 9)))
     return out[:limit]
 
@@ -292,6 +300,159 @@ def doctor_dashboard(doktor_id) -> dict:
         "bugun_uyari_sayisi": bugun_uyari,
         "ortalama_hasta_uyum_skoru": ort_skor,
     }
+
+
+# --- Dashboard verileri ---------------------------------------------------
+def _doctor_patient_ids(db, doktor_id) -> list:
+    return [
+        row["_id"]
+        for row in db[B.PATIENT_PROFILES].find({"doktor_id": doktor_id}, {"_id": 1})
+    ]
+
+
+def recent_measurements_for_doctor(doktor_id, limit: int = 6) -> list[dict]:
+    """Doktorun hastalarından en yeni ölçümler (dashboard listesi)."""
+    db = get_db()
+    if db is None:
+        return []
+    ids = _doctor_patient_ids(db, doktor_id)
+    if not ids:
+        return []
+    out = []
+    docs = (
+        db[B.MEASUREMENTS]
+        .find({"hasta_id": {"$in": ids}, "gecerli": True})
+        .sort([("olcum_zamani", -1)])
+        .limit(limit)
+    )
+    for doc in docs:
+        profile = db[B.PATIENT_PROFILES].find_one({"_id": doc["hasta_id"]}, {"user_id": 1})
+        user = db[B.USERS].find_one({"_id": profile["user_id"]}) if profile else None
+        name = f"{user['ad']} {user['soyad']}" if user else "Hasta"
+        out.append(
+            {
+                "hasta_id": doc["hasta_id"],
+                "hasta_adi": name,
+                "kan_sekeri_degeri": round(float(doc["kan_sekeri_degeri"]), 1),
+                "olcum_zamani": doc["olcum_zamani"],
+                "olcum_tipi": doc.get("olcum_tipi"),
+            }
+        )
+    return out
+
+
+def glucose_trend_for_doctor(doktor_id, days: int = 7) -> list[dict]:
+    """Doktorun tüm hastalarının günlük ortalama kan şekeri trendi."""
+    db = get_db()
+    if db is None:
+        return []
+    ids = _doctor_patient_ids(db, doktor_id)
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=max(days - 1, 0))
+    if not ids:
+        return [{"tarih": start + datetime.timedelta(days=i), "ortalama": None} for i in range(days)]
+    rows = db[B.MEASUREMENTS].aggregate(
+        [
+            {
+                "$match": {
+                    "hasta_id": {"$in": ids},
+                    "gecerli": True,
+                    "olcum_zamani": {"$gte": date_at(start)},
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "$dateToString": {"format": "%Y-%m-%d", "date": "$olcum_zamani"}
+                    },
+                    "ortalama": {"$avg": "$kan_sekeri_degeri"},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+    )
+    by_day = {row["_id"]: round(float(row["ortalama"]), 1) for row in rows}
+    return [
+        {
+            "tarih": start + datetime.timedelta(days=i),
+            "ortalama": by_day.get((start + datetime.timedelta(days=i)).isoformat()),
+        }
+        for i in range(days)
+    ]
+
+
+def measurement_counts_for_doctor(doktor_id, days: int = 7) -> list[int]:
+    """Son N günün günlük ölçüm sayıları (stat kartı sparkline)."""
+    db = get_db()
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=max(days - 1, 0))
+    counts = [0] * days
+    if db is None:
+        return counts
+    ids = _doctor_patient_ids(db, doktor_id)
+    if not ids:
+        return counts
+    rows = db[B.MEASUREMENTS].aggregate(
+        [
+            {
+                "$match": {
+                    "hasta_id": {"$in": ids},
+                    "gecerli": True,
+                    "olcum_zamani": {"$gte": date_at(start)},
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "$dateToString": {"format": "%Y-%m-%d", "date": "$olcum_zamani"}
+                    },
+                    "adet": {"$sum": 1},
+                }
+            },
+        ]
+    )
+    by_day = {row["_id"]: int(row["adet"]) for row in rows}
+    for i in range(days):
+        counts[i] = by_day.get((start + datetime.timedelta(days=i)).isoformat(), 0)
+    return counts
+
+
+def average_glucose_for_doctor(doktor_id, days: int = 7) -> float | None:
+    """Son N günün tüm hastalar için ortalama kan şekeri."""
+    trend = glucose_trend_for_doctor(doktor_id, days=days)
+    values = [row["ortalama"] for row in trend if row["ortalama"] is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 1)
+
+
+def glucose_distribution_for_doctor(doktor_id, days: int = 30) -> dict:
+    """Normal / yüksek / düşük ölçüm dağılımı (dashboard donut)."""
+    db = get_db()
+    if db is None:
+        return {"normal": 0, "yuksek": 0, "dusuk": 0}
+    ids = _doctor_patient_ids(db, doktor_id)
+    if not ids:
+        return {"normal": 0, "yuksek": 0, "dusuk": 0}
+    start = date_at(datetime.date.today() - datetime.timedelta(days=max(days - 1, 0)))
+    counts = {"normal": 0, "yuksek": 0, "dusuk": 0}
+    cursor = db[B.MEASUREMENTS].find(
+        {
+            "hasta_id": {"$in": ids},
+            "gecerli": True,
+            "olcum_zamani": {"$gte": start},
+        },
+        {"kan_sekeri_degeri": 1},
+    )
+    for doc in cursor:
+        value = float(doc["kan_sekeri_degeri"])
+        if value < 70:
+            counts["dusuk"] += 1
+        elif value <= 140:
+            counts["normal"] += 1
+        else:
+            counts["yuksek"] += 1
+    return counts
 
 
 # --- Doktor notları -------------------------------------------------------
@@ -462,7 +623,7 @@ def add_patient(
     """Hasta + kullanıcı kaydı. Dönen dict: {ok: bool, mesaj: str}."""
     db = get_db()
     if db is None:
-        return {"ok": False, "mesaj": "Veritabanı bağlantı hatası."}
+        return {"ok": False, "mesaj": "İşlem şu anda tamamlanamıyor. Lütfen tekrar deneyin."}
 
     if db[B.USERS].find_one(
         {"$or": [{"tc_kimlik_no": tc_no}, {"eposta": eposta}]}, {"_id": 1}
@@ -506,7 +667,7 @@ def create_appointment(
     """``patient_select`` = TC no. Hasta bulunamazsa hata döner."""
     db = get_db()
     if db is None:
-        return {"ok": False, "mesaj": "Veritabanı bağlantı hatası."}
+        return {"ok": False, "mesaj": "İşlem şu anda tamamlanamıyor. Lütfen tekrar deneyin."}
     hasta_id = find_patient_id_by_tc(db, patient_select)
     if not hasta_id:
         return {"ok": False, "mesaj": "Bu T.C. Kimlik No ile hasta bulunamadı."}

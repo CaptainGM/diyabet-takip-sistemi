@@ -3,7 +3,7 @@
 Kullanım::
 
     python scripts/generate_demo_data.py            # ~90 gün veri üret
-    python scripts/generate_demo_data.py --reset    # diyabet_takip DB'sini silip yeniden üret
+    python scripts/generate_demo_data.py --reset    # etkin DB'yi (MONGODB_DB) silip yeniden üret
 
 Sadece ``diyabet_takip`` veritabanına yazılır (varsayılan); başka DB'lere
 dokunmaz.
@@ -67,13 +67,28 @@ def _offset_minutes(hh: int, mm: int, spread: int = 15) -> tuple[int, int]:
     return divmod(total, 60)
 
 
+def _tip_for_hour(hour: int) -> str:
+    if hour < 7 or hour >= 22:
+        return "Gece"
+    if hour < 11:
+        return "Sabah"
+    if hour < 15:
+        return "Öğle"
+    if hour < 17:
+        return "İkindi"
+    if hour < 20:
+        return "Akşam"
+    return "Gece"
+
+
 def generate_measurements(hasta_id, days: int, good: bool) -> int:
     """``days`` gün geriye doğru ölçüm üretir; oluşturulan ölçüm sayısını döner."""
     db = get_db_strict()
     now = datetime.datetime.now()
     n = 0
-    for offset in range(days, 0, -1):
+    for offset in range(days, -1, -1):
         day = now.date() - datetime.timedelta(days=offset)
+        day_count = 0
         tips = list(MEAL_CENTERS)
         random.shuffle(tips)
         for tip in tips[: random.choice((2, 3, 3, 4, 4, 5))]:
@@ -102,6 +117,30 @@ def generate_measurements(hasta_id, days: int, good: bool) -> int:
                 }
             )
             n += 1
+            day_count += 1
+            if value < 70 or value > 200:
+                alert_service.evaluate_measurement(hasta_id, value, day)
+
+        # Gece yarısı çalıştırıldığında bugünün tüm öğünleri henüz gelecekte
+        # olabilir. Panonun "bugün" kartı boş kalmasın diye bugün için en az
+        # bir güncel ölçüm üret.
+        if offset == 0 and day_count == 0:
+            dt = now.replace(second=0, microsecond=0)
+            tip = _tip_for_hour(dt.hour)
+            value = round(random.uniform(95, 135), 1)
+            gecerli = measurement_service.is_on_time(dt, tip)
+            db[bootstrap.MEASUREMENTS].insert_one(
+                {
+                    "hasta_id": hasta_id,
+                    "olcum_zamani": dt,
+                    "kan_sekeri_degeri": value,
+                    "olcum_tipi": tip,
+                    "gecerli": gecerli,
+                    "notlar": "",
+                    "kayit_zamani": dt,
+                }
+            )
+            n += 1
             if value < 70 or value > 200:
                 alert_service.evaluate_measurement(hasta_id, value, day)
     return n
@@ -112,7 +151,7 @@ def generate_logs_and_scores(hasta_id, days: int, compliant: bool) -> None:
     now = datetime.datetime.now()
     diet_chance = 0.9 if compliant else 0.45
     exercise_chance = 0.85 if compliant else 0.35
-    for offset in range(days, 0, -1):
+    for offset in range(days, -1, -1):
         day = now.date() - datetime.timedelta(days=offset)
         diyet = random.random() < diet_chance
         egzersiz = random.random() < exercise_chance
@@ -138,7 +177,10 @@ def generate_plans_notes_appointments(doktor_id) -> None:
     db = get_db_strict()
     diyetler = ref.get_diet_types()
     egzersizler = ref.get_exercise_types()
-    for index, (tc, _ad, _soyad, _eposta, _tip, _hedef, compliant) in enumerate(EXTRA_PATIENTS):
+    targets = [("22222222222", True)] + [
+        (tc, compliant) for tc, _ad, _soyad, _eposta, _tip, _hedef, compliant in EXTRA_PATIENTS
+    ]
+    for index, (tc, compliant) in enumerate(targets):
         hasta_id = ref.find_patient_id_by_tc(db, tc)
         if not hasta_id:
             continue
@@ -169,33 +211,117 @@ def generate_plans_notes_appointments(doktor_id) -> None:
                 "guncelleme_tarihi": note_time,
             }
         )
-        for girilen_dakika, durum in ((10, "Tamamlandı"), (3, "Tamamlandı"), (-5, "Planlandı")):
+        appointment_slots = (
+            (10, 9 * 60 + 0, "Planlandı", "Kontrol muayenesi"),
+            (3, 11 * 60 + 0, "Planlandı", "HbA1c ve kan şekeri takibi"),
+            (-5, 14 * 60 + 0, "Tamamlandı", "İnsülin doz ayarı"),
+        )
+        for gun_farki, dakika, durum, notu in appointment_slots:
+            # Aynı gün/saatte çakışma olmasın: her hasta 30 dk arayla,
+            # günler de hastaya göre kaydırılır.
+            gun = gun_farki + (index if gun_farki > 0 else -index)
+            toplam_dakika = dakika + index * 30
             db[bootstrap.APPOINTMENTS].insert_one(
                 {
                     "doktor_id": doktor_id,
                     "hasta_id": hasta_id,
                     "randevu_tarihi": date_at(
-                        datetime.date.today() + datetime.timedelta(days=girilen_dakika)
+                        datetime.date.today() + datetime.timedelta(days=gun)
                     ),
-                    "randevu_saati": "10:00",
+                    "randevu_saati": f"{toplam_dakika // 60:02d}:{toplam_dakika % 60:02d}",
                     "sure_dakika": 30,
                     "durum": durum,
-                    "not_metni": "Kontrol",
+                    "not_metni": notu,
                     "olusturma_tarihi": datetime.datetime.now(),
                 }
             )
 
 
+def generate_symptoms(doktor_id) -> None:
+    """Son 7 güne doktor ve hasta kaynaklı belirti kayıtları ekler."""
+    db = get_db_strict()
+    options = ref.get_symptom_options()
+    if not options:
+        return
+    now = datetime.datetime.now()
+    targets = [
+        ("22222222222", 0),
+        ("33333333333", 1),
+        ("44444444444", 2),
+        ("55555555555", 0),
+    ]
+    samples = (
+        (2, "Orta", "Öğün sonrası hafif baş dönmesi", "Doktor"),
+        (1, "Hafif", "Sabah açlıkta halsizlik", "Hasta"),
+        (4, "Şiddetli", "Ayakta karıncalanma", "Doktor"),
+    )
+    for tc, offset in targets:
+        hasta_id = ref.find_patient_id_by_tc(db, tc)
+        if not hasta_id:
+            continue
+        for index, (days_ago, siddet, note, role) in enumerate(samples):
+            symptom_id = options[(offset + index) % len(options)][0]
+            day = datetime.date.today() - datetime.timedelta(days=days_ago)
+            db[bootstrap.SYMPTOM_RECORDS].update_one(
+                {
+                    "hasta_id": hasta_id,
+                    "belirti_id": symptom_id,
+                    "kayit_tarihi": date_at(day),
+                },
+                {
+                    "$set": {
+                        "siddet_seviyesi": siddet,
+                        "notlar": note,
+                        "doktor_id": doktor_id if role == "Doktor" else None,
+                        "kaydeden_role": role,
+                        "kayit_zamani": now - datetime.timedelta(days=days_ago),
+                    }
+                },
+                upsert=True,
+            )
+
+
+def generate_notifications() -> None:
+    """Hasta bildirimleri (Bildirimlerim ekranı boş kalmasın)."""
+    db = get_db_strict()
+    user = db[bootstrap.USERS].find_one({"tc_kimlik_no": "22222222222"})
+    if not user:
+        return
+    now = datetime.datetime.now()
+    samples = [
+        ("Uyarı", "Kan şekeri ölçümü hatırlatması",
+         "Bugünkü öğle ölçümünüzü henüz girmediniz. Ölçümünüzü eklemeyi unutmayın.", False),
+        ("Bilgi", "Diyet planınız güncellendi",
+         "Doktorunuz aktif diyet planınızı güncelledi. Planlar ekranından inceleyebilirsiniz.", False),
+        ("Randevu", "Yaklaşan kontrol randevusu",
+         "Yaklaşan kontrol randevunuz için Randevularım ekranını kontrol edin.", True),
+        ("Sistem", "Hoş geldiniz",
+         "Diyabet Takip Sistemi'ne hoş geldiniz. Sağlığınızı düzenli takip etmeyi unutmayın.", True),
+    ]
+    for index, (tip, baslik, mesaj, okundu) in enumerate(samples):
+        db[bootstrap.NOTIFICATIONS].insert_one(
+            {
+                "kullanici_id": user["_id"],
+                "bildirim_tipi": tip,
+                "baslik": baslik,
+                "mesaj": mesaj,
+                "okundu": okundu,
+                "olusturma_tarihi": now - datetime.timedelta(hours=3 + index * 11),
+            }
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Demo verisi üretici")
-    parser.add_argument("--reset", action="store_true", help="diyabet_takip DB'sini silip yeniden kur")
+    parser.add_argument("--reset", action="store_true", help="etkin veritabanını (MONGODB_DB) silip yeniden kur")
     parser.add_argument("--days", type=int, default=90, help="kaç gün geriye veri (varsayılan 90)")
     args = parser.parse_args()
 
     db = get_db_strict()
     if args.reset:
-        print("diyabet_takip veritabanı siliniyor...")
-        db.client.drop_database("diyabet_takip")
+        # Sabit ad yerine etkin veritabanı: MONGODB_DB ile ayrı bir DB'de deneme yapılabilsin.
+        print(f"{db.name} veritabanı siliniyor...")
+        db.client.drop_database(db.name)
         db = get_db_strict()
 
     bootstrap.ensure_schema(db)
@@ -221,6 +347,8 @@ def main() -> None:
                 print(f"  ! hasta eklenemedi {tc}: {result['mesaj']}")
 
     generate_plans_notes_appointments(doktor_id)
+    generate_symptoms(doktor_id)
+    generate_notifications()
 
     for profile in db[bootstrap.PATIENT_PROFILES].find({"doktor_id": doktor_id}):
         hasta_id = profile["_id"]
@@ -230,6 +358,14 @@ def main() -> None:
         n = generate_measurements(hasta_id, args.days, good)
         generate_logs_and_scores(hasta_id, args.days, compliant)
         print(f"hasta {hasta_id}: {n} ölçüm + {args.days} gün diyet/egzersiz/skor")
+
+    # 7 günden eski uyarıları okundu say (doktor paneli gerçekçi kalsın)
+    cutoff = datetime.datetime.combine(
+        datetime.date.today() - datetime.timedelta(days=7), datetime.time.min
+    )
+    db[bootstrap.ALERTS].update_many(
+        {"uyari_tarihi": {"$lt": cutoff}}, {"$set": {"okundu": True}}
+    )
 
     dashboard = doctors_db.doctor_dashboard(doktor_id)
     print("dashboard:", dashboard)

@@ -1,1 +1,0 @@
-"""Arayüz: hasta ekranları."""

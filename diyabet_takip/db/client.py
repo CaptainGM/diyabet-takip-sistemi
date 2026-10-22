@@ -42,9 +42,9 @@ def get_db() -> Database | None:
     """Veritabanı (Database | None). Bağlantı yoksa GUI uyarısı gösterir."""
     try:
         return get_client()[config.MONGODB_DB]
-    except DBError as exc:
+    except DBError:
         event_root = tk._get_default_root()
-        messagebox.showerror("Veritabanı Bağlantı Hatası", str(exc), parent=event_root)
+        messagebox.showerror("Bağlantı Kurulamadı", config.DB_HINT, parent=event_root)
         return None
 
 

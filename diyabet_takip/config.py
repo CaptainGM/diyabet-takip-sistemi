@@ -3,8 +3,8 @@
 Ayarlar ortam değişkenlerinden (ve varsa proje kökündeki ``.env`` dosyasından)
 okunur:
 
-- ``MONGODB_URI``     : bağlantı URI'si (örn. ``mongodb://localhost:27017``)
-- ``MONGODB_HOST``    : URI verilmediyse kullanılır (varsayılan ``localhost``)
+- ``MONGODB_URI``     : bağlantı URI'si (örn. ``mongodb://127.0.0.1:27017``)
+- ``MONGODB_HOST``    : URI verilmediyse kullanılır (varsayılan ``127.0.0.1``)
 - ``MONGODB_PORT``    : URI verilmediyse kullanılır (varsayılan ``27017``)
 - ``MONGODB_DB``      : veritabanı adı (varsayılan ``diyabet_takip``)
 """
@@ -34,12 +34,12 @@ def _load_dotenv(path: Path) -> None:
 _load_dotenv(PROJECT_ROOT / ".env")
 
 MONGODB_URI: str = os.environ.get("MONGODB_URI", "")
-MONGODB_HOST: str = os.environ.get("MONGODB_HOST", "localhost")
+MONGODB_HOST: str = os.environ.get("MONGODB_HOST", "127.0.0.1")
 MONGODB_PORT: int = int(os.environ.get("MONGODB_PORT", "27017"))
 MONGODB_DB: str = os.environ.get("MONGODB_DB", "diyabet_takip")
 
 #: Bağlantı hatasında kullanıcının göreceği yardımcı mesaj.
 DB_HINT = (
-    "MongoDB sunucusuna ulaşılamadı. mongod'un çalıştığından ve "
-    "MONGODB_URI / MONGODB_HOST / MONGODB_PORT ayarlarının doğru olduğundan emin olun."
+    "Sağlık verilerinize şu anda ulaşılamıyor. "
+    "Lütfen uygulamayı kapatıp yeniden açın."
 )

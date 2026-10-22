@@ -17,7 +17,7 @@ MongoDB gereklidir (lokal `mongod` veya `docker compose up -d`).
 
 ```bash
 python scripts/generate_demo_data.py --reset --days 90   # demo veri
-python scripts/smoke_test.py                             # 32 denetim — tümü ✔ olmalı
+python scripts/smoke_test.py                             # 33 denetim — tümü ✔ olmalı
 python main.py                                           # uygulama
 ```
 

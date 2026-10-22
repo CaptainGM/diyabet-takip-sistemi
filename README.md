@@ -1,43 +1,84 @@
 # Diyabet Takip Sistemi
 
-Doktor ve hastanın giriş yapabildiği, kan şekeri ölçümlerini, diyet ve egzersiz uyumunu takip eden masaüstü uygulaması. Python Tkinter ile yapıldı, veriler MySQL'de duruyor.
+[![CI](https://github.com/CaptainGM/diyabet-takip-sistemi/actions/workflows/ci.yml/badge.svg)](https://github.com/CaptainGM/diyabet-takip-sistemi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![Giriş ekranı](screenshot.png)
+Doktor ve hasta rolleriyle çalışan, kan şekeri ölçümü, uyarı, insülin önerisi,
+uyum takibi ve randevuları tek panoda toplayan bir masaüstü uygulaması
+(**Python · Tkinter · MongoDB**).
 
-## Neler var
+<p align="center"><img src="docs/screenshots/03-doktor-dashboard.png" width="820" alt="Doktor ana sayfası"></p>
 
-- T.C. Kimlik No ve şifre ile giriş, doktor ve hasta için ayrı ekranlar
-- Kan şekeri ölçümlerinin kaydı ve grafiği (matplotlib)
-- Diyet ve egzersiz planları, belirti kaydı
-- Kan şekeri eşik değerlerine göre otomatik uyarı
-- İnsülin doz önerisi
-- Hasta uyum skoru (diyet, egzersiz, ölçüm) ve son 30 günün grafiği
-- Doktordan hastaya bildirim
+<table>
+<tr>
+<td width="25%"><img src="docs/screenshots/01-giris-ekrani.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/12-hasta-dashboard.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/04-hastalarim.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/05-hasta-detayi.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><sub>Giriş</sub></td>
+<td align="center"><sub>Hasta ana sayfası</sub></td>
+<td align="center"><sub>Hastalarım</sub></td>
+<td align="center"><sub>Hasta detayı</sub></td>
+</tr>
+<tr>
+<td width="25%"><img src="docs/screenshots/13-olcum-gir.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/14-gecmis-grafik.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/06-hasta-uyarilari.png" width="100%"></td>
+<td width="25%"><img src="docs/screenshots/07-randevular.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><sub>Ölçüm girişi</sub></td>
+<td align="center"><sub>Geçmiş & grafik</sub></td>
+<td align="center"><sub>Uyarılar</sub></td>
+<td align="center"><sub>Randevular</sub></td>
+</tr>
+</table>
 
-## Kullanılanlar
+<p align="right"><sub>Tüm ekranlar → <a href="docs/screenshots/">docs/screenshots/</a></sub></p>
 
-Python, Tkinter, MySQL, matplotlib, tkcalendar
+## Özellikler
 
-## Çalıştırma
+- Kan şekeri ölçümü; öğün/saat aralığına göre geçerli/saat dışı ayrımı ve hedef bantlı grafik
+- Eşik tabanlı otomatik uyarı zinciri (hipo/hiperglisemi → doktora kritik uyarı)
+- Diyet/egzersiz planları, uyum skoru, insülin doz önerisi
+- Doktor için hasta filtreleme, plan atama, rapor ve randevu yönetimi
+- Bildirim merkezi, profil ve güçlü şifre politikası
 
-```
+## Kurulum
+
+```bash
 pip install -r requirements.txt
-mysql -u root -p < diyabet_takip_sistemi_schema.sql
+docker compose up -d                                      # ya da kendi mongod'unuz
+python scripts/generate_demo_data.py --reset --days 90    # demo veri
+python main.py
 ```
 
-Veritabanı bilgileri ortam değişkenlerinden okunuyor (Windows):
-
-```
-set DB_HOST=localhost
-set DB_USER=root
-set DB_PASSWORD=mysql_sifreniz
-set DB_NAME=diyabet_takip_sistemi
-python diyabet_takip_sistemi.py
-```
+Windows: `baslat.bat` çift tıkla başlatır (paket + MongoDB kontrolü dahil).
+Doğrulama: `python scripts/smoke_test.py` (33 uçtan uca denetim).
 
 ## Demo hesaplar
 
-Şema dosyası örnek (sahte) verilerle iki kullanıcı ekliyor:
+| Rol | T.C. No | Şifre |
+| --- | --- | --- |
+| Doktor | `11111111111` | `doktor123` |
+| Hasta | `22222222222` | `hasta123` |
 
-- Doktor: T.C. No `11111111111`, şifre `doktor123`
-- Hasta: T.C. No `22222222222`, şifre `hasta123`
+Giriş ekranındaki demo çipleriyle şifre yazmadan da denenebilir. Demo şifreleri
+bilinçli olarak basittir; yeni kayıt ve şifre değişiminde güçlü şifre politikası
+(en az 8 karakter, büyük/küçük harf, rakam, özel karakter) zorunludur.
+
+## Daha fazlası
+
+- [`docs/proje-yapisi.md`](docs/proje-yapisi.md) — dosya haritası ve mimari
+- [`docs/data-model.md`](docs/data-model.md) — veri modeli
+- [`CHANGELOG.md`](CHANGELOG.md) — sürüm geçmişi
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — katkı kılavuzu
+- [`LICENSE`](LICENSE) — MIT
+
+---
+
+**Görsel kaynak notu:** Ana sayfa karşılama fotoğrafı
+[Pexels #5452293](https://www.pexels.com/photo/5452293/) ücretsiz lisansıyla
+kullanılmıştır.

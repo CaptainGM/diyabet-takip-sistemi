@@ -1,182 +1,205 @@
-"""README için taze ekran görüntülerini üretir.
+"""README ekran görüntülerini tek pencere arayüzünden üretir.
 
 Kullanım::
 
-    python scripts/capture_screens.py
+    pip install -r requirements-dev.txt
+    python scripts/capture_screens.py                 # docs/screenshots/ içine
+    python scripts/capture_screens.py --out DIR       # başka bir klasöre
 
-Görüntüler ``docs/screenshots/*.png`` altına yazılır. Uygulama GUI'si kısa
-süreliğine açılır (sadece lokal veritabanı gerektirir).
+Görüntüler yalnızca mevcut demo verisiyle alınır; veritabanına yazılmaz.
 """
 
 from __future__ import annotations
 
-import ctypes
-import datetime
-import pathlib
+import argparse
 import sys
+import time
 import tkinter as tk
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-try:
-    ctypes.windll.user32.SetProcessDPIAware()  # Windows DPI ölçek eşlemesi
-except Exception:
-    pass
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from PIL import ImageGrab
 
-from diyabet_takip import state
-from diyabet_takip.db.client import get_db_strict
+from diyabet_takip import state, theme
+from diyabet_takip.db import bootstrap as B
+from diyabet_takip.db.client import get_db
+from diyabet_takip.ui import app, main_menu
+from diyabet_takip.ui.login_screen import show_login_screen
 
-OUT = pathlib.Path(__file__).resolve().parent.parent / "docs" / "screenshots"
-OUT.mkdir(parents=True, exist_ok=True)
-
-
-def last_modal(root: tk.Tk) -> tk.Wm:
-    """En son açılan Toplevel (modal) pencere."""
-    widgets = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]
-    return widgets[-1] if widgets else root
+OUT = ROOT / "docs" / "screenshots"  # --out ile değiştirilebilir
 
 
-def caption_window(widget: tk.Wm, name: str, settle_ms: int = 400) -> None:
-    """Pencereyi öne getirip içeriği doldurduktan sonra PNG'ye kaydeder."""
-
-    def _grab() -> None:
-        widget.update_idletasks()
-        widget.attributes("-topmost", True)
-        widget.update()
-        x = widget.winfo_rootx()
-        y = widget.winfo_rooty()
-        w = widget.winfo_width()
-        h = widget.winfo_height()
-        bbox = (max(0, x - 1), max(0, y - 30), x + w + 2, y + h + 2)
-        ImageGrab.grab(bbox=bbox).save(OUT / name)
-        print(f"  ↳ {name} kaydedildi")
-        widget.attributes("-topmost", False)
-
-    widget.update_idletasks()
-    widget.after(settle_ms, _grab)
-    widget.update()
-    widget.after(int(settle_ms * 2 + 200))
-    widget.update()
+def walk(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from walk(child)
 
 
-def close_all(root: tk.Tk) -> None:
-    for child in list(root.winfo_children()):
-        try:
-            child.grab_release()
-        except Exception:
-            pass
-        child.destroy()
-    root.update_idletasks()
+def find_label(widget, text: str) -> tk.Label | None:
+    for item in walk(widget):
+        if isinstance(item, tk.Label) and str(item.cget("text")) == text:
+            return item
+    return None
+
+
+def _pin_geometry(root: tk.Tk, width: int = 1920, height: int = 1080) -> None:
+    """Kabuk ekranlarının pencere boyutunu ve konumunu sabitler.
+
+    Boyut tam 1080p: ekran görüntüleri her zaman aynı, tutarlı çözünürlükte
+    çıkar. ``-topmost`` KULLANILMAZ; pencere sistem genelinde önplana
+    atılmaz (ör. başka bir monitörde oynanan bir oyunu bölmez). Pencere,
+    birincil monitörün sol-üst köşesine konur — ikincil bir monitöre
+    taşımak denendi, ancak bu ortamda (sanal/uzak ekran) ``ImageGrab``
+    bazı karelerde pencerenin bir köşesini boş yakalıyordu; birincil
+    monitörde bu sorun hiç görülmedi. Bazı çok ekranlı / sanal ekranlı
+    kurulumlarda ``winfo_screenwidth/height`` aynı betik çalışması
+    içinde bile farklı sonuçlar dönebilir; bu yüzden geometri, ölçüm
+    hedefle eşleşene kadar tekrar tekrar uygulanır.
+    """
+    for _attempt in range(6):
+        root.geometry(f"{width}x{height}+20+20")
+        for _ in range(10):
+            root.update_idletasks()
+            root.update()
+            time.sleep(0.02)
+        if (root.winfo_width(), root.winfo_height()) == (width, height):
+            return
+        time.sleep(0.15)  # bir sonraki denemeden önce dış etken yatışsın
+
+
+def snap(root: tk.Tk, name: str) -> None:
+    """Pencere çizilsin, sonra yalnızca istemci alanını kaydet.
+
+    Bazı çok ekranlı / DPI ölçekli kurulumlarda ``winfo_width/height`` birkaç
+    kare boyunca kararsız olabilir (pencere geometrisi tam oturmadan önce
+    ölçüm alınırsa görüntünün altında boş/beyaz bir şerit kalabilir). Ölçüm,
+    art arda iki karede aynı sonucu verene kadar tekrarlanır.
+    """
+    root.lift()  # yalnızca kendi katmanında öne gelir; sistem genelinde önplana atmaz
+    last_size: tuple[int, int] | None = None
+    for _ in range(80):
+        root.update_idletasks()
+        root.update()
+        time.sleep(0.025)
+        size = (root.winfo_width(), root.winfo_height())
+        if size == last_size:
+            break
+        last_size = size
+    image = ImageGrab.grab(window=root.winfo_id())
+    expected = (root.winfo_width(), root.winfo_height())
+    if image.size != expected:  # bazı Windows sürümlerinde başlık çubuğu eklenir
+        image = image.crop((0, 0, expected[0], expected[1]))
+    image.save(OUT / name)
+    print(f"{name}  {image.size[0]}x{image.size[1]}")
+
+
+def set_session(db, role: str) -> None:
+    state.session.reset()
+    user = db[B.USERS].find_one({"rol": role})
+    if user is None:
+        raise RuntimeError("Demo kullanıcılar bulunamadı; önce demo-veri.bat çalıştırın.")
+    state.session.user_id = user["_id"]
+    state.session.user_ad = user["ad"]
+    state.session.user_soyad = user["soyad"]
+    state.session.user_role = role
+    if role == "Doktor":
+        profile = db[B.DOCTOR_PROFILES].find_one({"user_id": user["_id"]})
+        state.session.doctor_id = profile["_id"]
+        state.session.patient_id = None
+    else:
+        profile = db[B.PATIENT_PROFILES].find_one({"user_id": user["_id"]})
+        state.session.patient_id = profile["_id"]
+        state.session.doctor_id = None
 
 
 def main() -> None:
-    print(f"Görüntüler oluşturuluyor: {datetime.date.today().isoformat()}")
+    global OUT
+    parser = argparse.ArgumentParser(description="README ekran görüntüleri")
+    parser.add_argument("--out", type=Path, default=OUT, help="çıktı klasörü")
+    OUT = parser.parse_args().out
+    app._enable_high_dpi()
+    OUT.mkdir(parents=True, exist_ok=True)
+    for old in OUT.glob("*.png"):
+        old.unlink()
+
+    db = get_db()
+    if db is None:
+        raise SystemExit("MongoDB bağlantısı kurulamadı.")
+
     root = tk.Tk()
-    root.withdraw()
+    theme.apply_theme(root)
+    app.apply_app_icon(root)
     state.session.window = root
-
-    from diyabet_takip.db import reference as ref
-    from diyabet_takip.ui.doctor.alerts import show_critical_patients, show_doctor_alerts
-    from diyabet_takip.ui.doctor.dashboard import show_doctor_dashboard
-    from diyabet_takip.ui.doctor.patients import show_patient_detail_window
-    from diyabet_takip.ui.doctor.reports import show_appointment_management
-    from diyabet_takip.ui.login_screen import show_login_screen
-    from diyabet_takip.ui.main_menu import show_main_app_screen
-    from diyabet_takip.ui.patient.measurements import (
-        enter_blood_sugar,
-        show_blood_sugar_history_and_graphs,
-    )
-    from diyabet_takip.ui.patient.tracking import show_patient_compliance
-
     root.deiconify()
 
-    # 1) Giriş ekranı
+    # --- Giriş ve kayıt -----------------------------------------------------
+    # Not: giriş ekranı kendi boyutunu/konumunu ayarlar (_pin_geometry
+    # kullanılmaz). Bu pencereyi başka bir monitöre taşımak dene(n)di, ancak
+    # ImageGrab bazı karelerde üst kısmı boş/beyaz yakalıyordu (muhtemelen bu
+    # sanal/uzak masaüstü kurulumuna özgü bir kırpma hatası); mevcut hâliyle
+    # bu iki görüntü sorunsuz çıktığı için dokunulmadı.
     show_login_screen(lambda: None)
-    caption_window(root, "01-giris-ekrani.png")
-    close_all(root)
+    root.update()
+    snap(root, "01-giris-ekrani.png")
 
-    db = get_db_strict()
-    doc_user = db["users"].find_one({"tc_kimlik_no": "11111111111"})
-    doc_profile = db["doctor_profiles"].find_one({"user_id": doc_user["_id"]})
-    pat_user = db["users"].find_one({"tc_kimlik_no": "22222222222"})
-    pat_profile = db["patient_profiles"].find_one({"user_id": pat_user["_id"]})
-    patient = ref.find_patient_profile(db, pat_profile["_id"])
+    show_login_screen(lambda: None, start_tab="register")
+    root.update()
+    snap(root, "02-kayit-ekrani.png")
 
-    # 2) Hasta ana menü
-    _set_patient_session(state, pat_user, pat_profile)
-    show_main_app_screen()
-    caption_window(root, "02-ana-menu-hasta.png")
-    close_all(root)
+    # --- Doktor panelleri ---------------------------------------------------
+    set_session(db, "Doktor")
+    main_menu.show_main_app_screen()
+    _pin_geometry(root)
+    snap(root, "03-doktor-dashboard.png")
 
-    # 3) Hasta — ölçüm girme
-    enter_blood_sugar()
-    caption_window(last_modal(root), "03-olcum-gir.png")
-    close_all(root)
+    patient = db[B.PATIENT_PROFILES].find_one({"doktor_id": state.session.doctor_id})
+    if patient is None:
+        raise SystemExit("Doktorun hastası bulunamadı.")
+    patient_id = str(patient["_id"])
 
-    # 4) Hasta — geçmiş + grafik
-    show_blood_sugar_history_and_graphs()
-    caption_window(last_modal(root), "04-olcum-gecmis-grafik.png")
-    close_all(root)
+    pages = [
+        ("patients", "04-hastalarim.png", {}),
+        ("patient_detail", "05-hasta-detayi.png", {"patient_id": patient_id}),
+        ("alerts", "06-hasta-uyarilari.png", {}),
+        ("critical", "06b-kritik-hastalar.png", {}),
+        ("appointments", "07-randevular.png", {}),
+        ("reports", "08-raporlar.png", {"patient_id": patient_id}),
+        ("plans", "09-plan-belirti.png", {}),
+        ("add_patient", "10-hasta-ekle.png", {}),
+        ("profile", "11-doktor-profil.png", {}),
+    ]
+    for key, name, kwargs in pages:
+        root._app_router.navigate(key, **kwargs)
+        _pin_geometry(root)
+        snap(root, name)
 
-    # 5) Hasta — uyum takibi
-    show_patient_compliance()
-    caption_window(last_modal(root), "05-uyum-takibi.png")
-    close_all(root)
+    # --- Hasta panelleri ----------------------------------------------------
+    set_session(db, "Hasta")
+    main_menu.show_main_app_screen()
+    _pin_geometry(root)
+    snap(root, "12-hasta-dashboard.png")
 
-    # 6) Doktor ana menü
-    _set_doctor_session(state, doc_user, doc_profile)
-    show_main_app_screen()
-    caption_window(root, "06-ana-menu-doktor.png")
-    close_all(root)
-
-    # 7) Doktor paneli
-    show_doctor_dashboard()
-    caption_window(last_modal(root), "07-doktor-paneli.png")
-    close_all(root)
-
-    # 8) Hasta uyarıları
-    show_doctor_alerts()
-    caption_window(last_modal(root), "08-hasta-uyarilari.png")
-    close_all(root)
-
-    # 9) Kritik hastalar
-    show_critical_patients()
-    caption_window(last_modal(root), "09-kritik-hastalar.png")
-    close_all(root)
-
-    # 10) Randevu yönetimi
-    show_appointment_management()
-    caption_window(last_modal(root), "10-randevu-yonetimi.png")
-    close_all(root)
-
-    # 11) Hasta detayı (sekmeli pencere)
-    show_patient_detail_window(patient)
-    caption_window(last_modal(root), "11-hasta-detay.png")
-    close_all(root)
+    patient_pages = [
+        ("measure", "13-olcum-gir.png"),
+        ("history", "14-gecmis-grafik.png"),
+        ("compliance", "15-uyum-takibi.png"),
+        ("insulin", "16-insulin.png"),
+        ("notifications", "17-bildirimler.png"),
+        ("patient_plans", "18-planlarim.png"),
+        ("patient_appointments", "19-randevularim.png"),
+        ("profile", "20-hasta-profil.png"),
+    ]
+    for key, name in patient_pages:
+        root._app_router.navigate(key)
+        _pin_geometry(root)
+        snap(root, name)
 
     root.destroy()
-    print("Tamamlandı →", OUT)
-
-
-def _set_patient_session(state, pat_user: dict, pat_profile: dict) -> None:
-    state.session.user_id = pat_user["_id"]
-    state.session.user_ad = pat_user["ad"]
-    state.session.user_soyad = pat_user["soyad"]
-    state.session.user_role = "Hasta"
-    state.session.patient_id = pat_profile["_id"]
-    state.session.doctor_id = None
-
-
-def _set_doctor_session(state, doc_user: dict, doc_profile: dict) -> None:
-    state.session.user_id = doc_user["_id"]
-    state.session.user_ad = doc_user["ad"]
-    state.session.user_soyad = doc_user["soyad"]
-    state.session.user_role = "Doktor"
-    state.session.doctor_id = doc_profile["_id"]
-    state.session.patient_id = None
+    print(f"\n{len(list(OUT.glob('*.png')))} görüntü hazır: {OUT}")
 
 
 if __name__ == "__main__":

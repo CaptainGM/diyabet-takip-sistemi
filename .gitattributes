@@ -1,0 +1,8 @@
+# Windows batch dosyaları her zaman CRLF olmalı
+*.bat text eol=crlf
+
+# Metin dosyolarında yeni satır normalizasyonu
+*.md text
+*.py text eol=lf
+*.toml text
+*.yml text
